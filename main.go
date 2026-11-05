@@ -67,6 +67,16 @@ func (h *ServiceHandler) PublishLimit(topic string, limitType string, limitWatts
 	log.Printf("[EEBUS -> MQTT] %s-Limit: %.0f W (Aktiv: %t) -> %s", limitType, limitWatts, active, topic)
 }
 
+// Hilfsfunktion zur Autorisierungsprüfung
+func isAuthorized(remoteSki string, allowedList []string) bool {
+    for _, s := range allowedList {
+        if s == remoteSki {
+            return true
+        }
+    }
+    return false
+}
+
 func main() {
 	log.Println("Starte EEBUS Service (LPC & LPP) fuer Cerbo GX...")
 
