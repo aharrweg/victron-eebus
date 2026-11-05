@@ -1,0 +1,54 @@
+Dienst auf dem Cerbo einrichten (Shell)
+Melden Sie sich per SSH auf dem Cerbo an und richten Sie den Autostart über den Venus-OS-Supervisor ein:
+# 1. Verzeichnisse anlegen
+mkdir -p /data/apps/eebus/service/log
+mkdir -p /data/apps/eebus/cert
+mkdir -p /data/apps/eebus/log
+
+# 2. Rechte setzen
+chmod +x /data/apps/eebus/eebus-cerbo
+
+# 3. Run-Skript erstellen
+cat << 'EOF' > /data/apps/eebus/service/run
+#!/bin/sh
+exec 2>&1
+exec /data/apps/eebus/eebus-cerbo
+EOF
+chmod +x /data/apps/eebus/service/run
+
+# 4. Logger-Skript erstellen
+cat << 'EOF' > /data/apps/eebus/service/log/run
+#!/bin/sh
+exec multilog t s25000 n4 /data/apps/eebus/log
+EOF
+chmod +x /data/apps/eebus/service/log/run
+
+# 5. Dienst aktivieren
+ln -s /data/apps/eebus/service /service/eebus
+
+# 6. Update-Schutz in rc.local hinterlegen
+grep -q "/service/eebus" /data/rc.local 2>/dev/null || cat << 'EOF' >> /data/rc.local
+if [ ! -L /service/eebus ]; then
+    ln -s /data/apps/eebus/service /service/eebus
+fi
+EOF
+chmod +x /data/rc.local
+
+
+Prüfen Sie den Status mit:
+svstat /service/eebus
+
+
+3. Pairing: Eigener SKI und Steuerbox koppeln
+EEBUS nutzt gegenseitige Authentifizierung über sogenannte SKI (Subject Key Identifier). Der Cerbo und die Steuerbox des Messstellenbetreibers/Netzbetreibers müssen sich gegenseitig kennen:
+Eigenen Cerbo-SKI ermitteln: cat /data/apps/eebus/log/current | tai64nlocal
+Diesen SKI tragen Sie in der Konfiguration/Weboberfläche der Steuerbox bzw. des SMGW als Gegenstelle ein.
+
+config.json auf dem Cerbo anlegen (/data/apps/eebus/config.json):
+
+{
+  "authorized_skis": [
+    "0123-4567-89ab-cdef-0123-4567-89ab-cdef-0123-4567"
+  ]
+}
+
