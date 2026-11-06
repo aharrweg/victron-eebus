@@ -195,6 +195,33 @@ func main() {
 	srv.Start()
 	log.Println("[EEBUS] Service lauscht auf Port 4712. Bereit für § 14a Signale.")
 
+	// MQTT-Listener für manuelle SKI-Freigabe (Variante A)
+	if mqttClient.IsConnected() {
+		mqttClient.Subscribe("eebus/service/register_ski", 0, func(c mqtt.Client, m mqtt.Message) {
+			type SkiMsg struct {
+				SKI string `json:"ski"`
+			}
+			var req SkiMsg
+			payloadStr := string(m.Payload())
+
+			// Unterstützt reinen Text ("82973a...") oder JSON ({"ski":"82973a..."})
+			if err := json.Unmarshal(m.Payload(), &req); err == nil && req.SKI != "" {
+				payloadStr = req.SKI
+			}
+
+			log.Printf("[EEBUS Freigabe] Registriere Remote-SKI via MQTT: %s", payloadStr)
+			srv.RegisterRemoteSKI(payloadStr)
+
+			// Korrektur: handler statt h
+			handler.publishJSON("eebus/service/registered_skis", map[string]any{
+				"registered_ski": payloadStr,
+				"timestamp":      time.Now().Format(time.RFC3339),
+			})
+		})
+		log.Println("[MQTT] Abonniert: eebus/service/register_ski")
+	}
+	log.Println("[EEBUS] Service lauscht auf Port 4712. Bereit für § 14a Signale.")
+
 	// Heartbeat für Node-RED
 	stopHeartbeat := make(chan struct{})
 	go func() {
