@@ -190,8 +190,19 @@ func main() {
 		log.Fatalf("Setup-Fehler: %v", err)
 	}
 
-	handler.srv = srv
+	// CEM-Entity abrufen und LoadControl Server Feature registrieren
+	localEntity := srv.LocalDevice().EntityForType(spinemodel.EntityTypeTypeCEM)
+	if localEntity != nil {
+		f := localEntity.GetOrAddFeature(
+			spinemodel.FeatureTypeTypeLoadControl,
+			spinemodel.RoleTypeServer,
+		)
+		// Schreibberechtigung für Dimmbefehle freischalten
+		f.AddFunctionType(spinemodel.FunctionTypeLoadControlLimitListData, true, true)
+		log.Println("[EEBUS] LoadControl Server Feature auf Cerbo registriert.")
+	}
 
+	handler.srv = srv
 	srv.Start()
 	log.Println("[EEBUS] Service lauscht auf Port 4712. Bereit für § 14a Signale.")
 
