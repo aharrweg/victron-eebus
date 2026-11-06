@@ -2,16 +2,11 @@ package main
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"log"
-	"math/big"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -65,45 +60,33 @@ func ensureCertificate(certFile, keyFile string) (tls.Certificate, error) {
 		return tls.LoadX509KeyPair(certFile, keyFile)
 	}
 
-	log.Println("[EEBUS] Erstelle neues X.509 ECDSA Zertifikat...")
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	log.Println("[EEBUS] Erstelle neues X.509 ECDSA Zertifikat inklusive SKI...")
+	tlsCert, err := shipcert.CreateCertificate(ServiceName, Manufacturer, "DE", ServiceName)
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, fmt.Errorf("Zertifikatserstellung fehlgeschlagen: %w", err)
 	}
 
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject: pkix.Name{
-			CommonName:   ServiceName,
-			Organization: []string{Manufacturer},
-			Country:      []string{"DE"},
-		},
-		NotBefore:             time.Now().Add(-1 * time.Hour),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
+	// 1. Zertifikat speichern
 	certOut, err := os.Create(certFile)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
 	defer certOut.Close()
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: tlsCert.Certificate[0]}); err != nil {
 		return tls.Certificate{}, err
 	}
 
-	keyBytes, err := x509.MarshalECPrivateKey(priv)
+	// 2. ECDSA Private Key extrahieren und speichern
+	ecdsaKey, ok := tlsCert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return tls.Certificate{}, fmt.Errorf("Schlüssel ist kein ECDSA Private Key")
+	}
+
+	keyBytes, err := x509.MarshalECPrivateKey(ecdsaKey)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
+
 	keyOut, err := os.Create(keyFile)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -113,7 +96,7 @@ func ensureCertificate(certFile, keyFile string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 
-	return tls.LoadX509KeyPair(certFile, keyFile)
+	return tlsCert, nil
 }
 
 func main() {
@@ -150,7 +133,7 @@ func main() {
 	ski, _ := shipcert.SkiFromCertificate(leaf)
 	log.Printf("[EEBUS] Eigener Cerbo SKI: %s", ski)
 
-	// 3. Konfigurationsobjekt als *eebusapi.Configuration erstellen
+	// 3. Konfigurationsobjekt erstellen
 	entityTypes := []spinemodel.EntityTypeType{
 		spinemodel.EntityTypeTypeCEM,
 	}
