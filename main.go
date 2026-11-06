@@ -21,6 +21,7 @@ import (
 	shipcert "github.com/enbility/ship-go/cert"
 	spineapi "github.com/enbility/spine-go/api"
 	spinemodel "github.com/enbility/spine-go/model"
+	"github.com/enbility/spine-go/spine"
 )
 
 const (
@@ -91,13 +92,10 @@ func (h *ServiceHandler) ServiceShipIDUpdate(ski string, shipID string) {
 	})
 }
 
-// SPINE Event Handler für eingehende Dimmvorgaben (§ 14a EnWG)
-func (h *ServiceHandler) HandleSpineEvent(payload spineapi.EventPayload) {
-	if payload.EventType != spineapi.EventTypeDataChange || payload.ChangeType != spineapi.ElementChangeUpdate {
-		return
-	}
+// SPINE Event Handler für ankommende Dimmvorgaben (§ 14a EnWG)
+func (h *ServiceHandler) HandleEvent(payload spineapi.EventPayload) {
+	log.Printf("[SPINE RAW] EventType: %v, ChangeType: %v, Data-Typ: %T", payload.EventType, payload.ChangeType, payload.Data)
 
-	// Prüfen, ob es sich um eine Begrenzung (LoadControlLimitListDataType) handelt
 	if data, ok := payload.Data.(*spinemodel.LoadControlLimitListDataType); ok && data != nil {
 		for _, item := range data.LoadControlLimitData {
 			if item.Value != nil {
@@ -112,6 +110,10 @@ func (h *ServiceHandler) HandleSpineEvent(payload spineapi.EventPayload) {
 			}
 		}
 	}
+}
+
+func (h *ServiceHandler) HandleSpineEvent(payload spineapi.EventPayload) {
+	h.HandleEvent(payload)
 }
 
 func ensureCertificate(certFile, keyFile string) (tls.Certificate, error) {
@@ -190,6 +192,11 @@ func main() {
 		log.Fatalf("Setup-Fehler: %v", err)
 	}
 
+	// Globalen Event-Handler über das spine.Events-Singleton anbinden
+	if err := spine.Events.Subscribe(handler); err != nil {
+		log.Printf("[EEBUS] Fehler beim Abonnieren der SPINE Events: %v", err)
+	}
+
 	// CEM-Entity abrufen und LoadControl Server Feature registrieren
 	localEntity := srv.LocalDevice().EntityForType(spinemodel.EntityTypeTypeCEM)
 	if localEntity != nil {
@@ -197,7 +204,6 @@ func main() {
 			spinemodel.FeatureTypeTypeLoadControl,
 			spinemodel.RoleTypeServer,
 		)
-		// Schreibberechtigung für Dimmbefehle freischalten
 		f.AddFunctionType(spinemodel.FunctionTypeLoadControlLimitListData, true, true)
 		log.Println("[EEBUS] LoadControl Server Feature auf Cerbo registriert.")
 	}
@@ -206,7 +212,7 @@ func main() {
 	srv.Start()
 	log.Println("[EEBUS] Service lauscht auf Port 4712. Bereit für § 14a Signale.")
 
-	// MQTT-Listener für manuelle SKI-Freigabe (Variante A)
+	// MQTT-Listener für manuelle SKI-Freigabe
 	if mqttClient.IsConnected() {
 		mqttClient.Subscribe("eebus/service/register_ski", 0, func(c mqtt.Client, m mqtt.Message) {
 			type SkiMsg struct {
@@ -215,7 +221,6 @@ func main() {
 			var req SkiMsg
 			payloadStr := string(m.Payload())
 
-			// Unterstützt reinen Text ("82973a...") oder JSON ({"ski":"82973a..."})
 			if err := json.Unmarshal(m.Payload(), &req); err == nil && req.SKI != "" {
 				payloadStr = req.SKI
 			}
@@ -223,7 +228,6 @@ func main() {
 			log.Printf("[EEBUS Freigabe] Registriere Remote-SKI via MQTT: %s", payloadStr)
 			srv.RegisterRemoteSKI(payloadStr)
 
-			// Korrektur: handler statt h
 			handler.publishJSON("eebus/service/registered_skis", map[string]any{
 				"registered_ski": payloadStr,
 				"timestamp":      time.Now().Format(time.RFC3339),
@@ -231,7 +235,6 @@ func main() {
 		})
 		log.Println("[MQTT] Abonniert: eebus/service/register_ski")
 	}
-	log.Println("[EEBUS] Service lauscht auf Port 4712. Bereit für § 14a Signale.")
 
 	// Heartbeat für Node-RED
 	stopHeartbeat := make(chan struct{})
