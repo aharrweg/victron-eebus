@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -33,26 +34,78 @@ type ServiceHandler struct {
 	mqttClient mqtt.Client
 }
 
+func (h *ServiceHandler) publishJSON(topic string, data any) {
+	if h.mqttClient == nil || !h.mqttClient.IsConnected() {
+		return
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	h.mqttClient.Publish(topic, 0, false, payload)
+}
+
 func (h *ServiceHandler) RemoteSKIConnected(srv eebusapi.ServiceInterface, ski string) {
 	log.Printf("[EEBUS] Steuerbox verbunden: %s", ski)
+	h.publishJSON("eebus/status", map[string]any{
+		"connected": true,
+		"remote_ski": ski,
+		"timestamp":  time.Now().Format(time.RFC3339),
+	})
 }
 
 func (h *ServiceHandler) RemoteSKIDisconnected(srv eebusapi.ServiceInterface, ski string) {
 	log.Printf("[EEBUS] Steuerbox getrennt: %s", ski)
+	h.publishJSON("eebus/status", map[string]any{
+		"connected": false,
+		"remote_ski": ski,
+		"timestamp":  time.Now().Format(time.RFC3339),
+	})
 }
 
 func (h *ServiceHandler) VisibleRemoteServicesUpdated(srv eebusapi.ServiceInterface, entries []shipapi.RemoteService) {
-	for _, entry := range entries {
-		log.Printf("[EEBUS mDNS] Gefundenes Geraet: SKI=%s", entry.Ski)
+	type DiscoveredService struct {
+		Ski        string `json:"ski"`
+		Identifier string `json:"identifier"`
+		Brand      string `json:"brand"`
+		Model      string `json:"model"`
 	}
+
+	discovered := make([]DiscoveredService, 0, len(entries))
+	for _, entry := range entries {
+		log.Printf("[EEBUS mDNS] Gefundenes Gerät: SKI=%s Identifier=%s", entry.Ski, entry.Identifier)
+		discovered = append(discovered, DiscoveredService{
+			Ski:        entry.Ski,
+			Identifier: entry.Identifier,
+			Brand:      entry.Brand,
+			Model:      entry.Model,
+		})
+	}
+
+	h.publishJSON("eebus/discovery", map[string]any{
+		"devices":   discovered,
+		"count":     len(discovered),
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
 }
 
 func (h *ServiceHandler) ServicePairingDetailUpdate(ski string, detail *shipapi.ConnectionStateDetail) {
-	log.Printf("[EEBUS Pairing] Update fuer SKI %s", ski)
+	log.Printf("[EEBUS Pairing] Update für SKI %s", ski)
+	stateStr := fmt.Sprintf("%v", detail.State())
+	h.publishJSON("eebus/pairing", map[string]any{
+		"ski":       ski,
+		"state":     stateStr,
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
 }
 
 func (h *ServiceHandler) ServiceShipIDUpdate(ski string, shipID string) {
-	log.Printf("[EEBUS SHIP] Update fuer SKI %s -> ShipID %s", ski, shipID)
+	log.Printf("[EEBUS SHIP] Update für SKI %s -> ShipID %s", ski, shipID)
+	h.publishJSON("eebus/ship", map[string]any{
+		"ski":       ski,
+		"ship_id":   shipID,
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
 }
 
 func ensureCertificate(certFile, keyFile string) (tls.Certificate, error) {
@@ -66,7 +119,6 @@ func ensureCertificate(certFile, keyFile string) (tls.Certificate, error) {
 		return tls.Certificate{}, fmt.Errorf("Zertifikatserstellung fehlgeschlagen: %w", err)
 	}
 
-	// 1. Zertifikat speichern
 	certOut, err := os.Create(certFile)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -76,7 +128,6 @@ func ensureCertificate(certFile, keyFile string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 
-	// 2. ECDSA Private Key extrahieren und speichern
 	ecdsaKey, ok := tlsCert.PrivateKey.(*ecdsa.PrivateKey)
 	if !ok {
 		return tls.Certificate{}, fmt.Errorf("Schlüssel ist kein ECDSA Private Key")
@@ -133,7 +184,7 @@ func main() {
 	ski, _ := shipcert.SkiFromCertificate(leaf)
 	log.Printf("[EEBUS] Eigener Cerbo SKI: %s", ski)
 
-	// 3. Konfigurationsobjekt erstellen
+	// 3. Service konfigurieren
 	entityTypes := []spinemodel.EntityTypeType{
 		spinemodel.EntityTypeTypeCEM,
 	}
@@ -161,11 +212,36 @@ func main() {
 	srv.Start()
 	log.Println("[EEBUS] Service lauscht auf Port 4712. mDNS aktiv.")
 
+	// 4. Zyklischer MQTT-Heartbeat für Node-RED (alle 5 Sekunden)
+	stopHeartbeat := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if mqttClient.IsConnected() {
+					payload, _ := json.Marshal(map[string]any{
+						"status":    "running",
+						"cerbo_ski": ski,
+						"port":      4712,
+						"timestamp": time.Now().Format(time.RFC3339),
+					})
+					mqttClient.Publish("eebus/heartbeat", 0, false, payload)
+				}
+			case <-stopHeartbeat:
+				return
+			}
+		}
+	}()
+
+	// Signal-Handler für sauberes Beenden
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 	<-stopChan
 
 	log.Println("Beende EEBUS Service...")
+	close(stopHeartbeat)
 	srv.Shutdown()
 	mqttClient.Disconnect(250)
 	fmt.Println("Beendet.")
