@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,8 +34,10 @@ const (
 )
 
 type ServiceHandler struct {
-	mqttClient mqtt.Client
-	srv        eebusapi.ServiceInterface
+	mqttClient   mqtt.Client
+	srv          eebusapi.ServiceInterface
+	knownSkis    map[string]bool
+	knownSkisMux sync.Mutex
 }
 
 func (h *ServiceHandler) publishJSON(topic string, data any) {
@@ -67,10 +70,16 @@ func (h *ServiceHandler) RemoteSKIDisconnected(srv eebusapi.ServiceInterface, sk
 }
 
 func (h *ServiceHandler) VisibleRemoteServicesUpdated(srv eebusapi.ServiceInterface, entries []shipapi.RemoteService) {
+	h.knownSkisMux.Lock()
+	defer h.knownSkisMux.Unlock()
+
 	for _, entry := range entries {
-		log.Printf("[EEBUS mDNS] Gefundenes Gerät: SKI=%s", entry.Ski)
-		if h.srv != nil {
-			h.srv.RegisterRemoteSKI(entry.Ski)
+		if !h.knownSkis[entry.Ski] {
+			h.knownSkis[entry.Ski] = true
+			log.Printf("[EEBUS mDNS] Neues Gerät entdeckt: SKI=%s", entry.Ski)
+			if h.srv != nil {
+				h.srv.RegisterRemoteSKI(entry.Ski)
+			}
 		}
 	}
 }
@@ -94,8 +103,13 @@ func (h *ServiceHandler) ServiceShipIDUpdate(ski string, shipID string) {
 
 // SPINE Event Handler für ankommende Dimmvorgaben (§ 14a EnWG)
 func (h *ServiceHandler) HandleEvent(payload spineapi.EventPayload) {
-	log.Printf("[SPINE RAW] EventType: %v, ChangeType: %v, Data-Typ: %T", payload.EventType, payload.ChangeType, payload.Data)
+	log.Printf("[SPINE DEBUG] EventType: %v | ChangeType: %v | Data-Typ: %T", payload.EventType, payload.ChangeType, payload.Data)
 
+	if payload.Data == nil {
+		return
+	}
+
+	// 1. Direktes LoadControlLimitListDataType
 	if data, ok := payload.Data.(*spinemodel.LoadControlLimitListDataType); ok && data != nil {
 		for _, item := range data.LoadControlLimitData {
 			if item.Value != nil {
@@ -109,7 +123,12 @@ func (h *ServiceHandler) HandleEvent(payload spineapi.EventPayload) {
 				})
 			}
 		}
+		return
 	}
+
+	// 2. Fallback-Rohdatenausgabe für unbekannte Typen
+	rawBytes, _ := json.Marshal(payload.Data)
+	log.Printf("[SPINE RAW-PAYLOAD] %s", string(rawBytes))
 }
 
 func (h *ServiceHandler) HandleSpineEvent(payload spineapi.EventPayload) {
@@ -155,7 +174,10 @@ func main() {
 		log.Printf("[MQTT] Fehler: %v", token.Error())
 	}
 
-	handler := &ServiceHandler{mqttClient: mqttClient}
+	handler := &ServiceHandler{
+		mqttClient: mqttClient,
+		knownSkis:  make(map[string]bool),
+	}
 
 	if err := os.MkdirAll(CertDir, 0755); err != nil {
 		log.Fatalf("Zertifikatsordner fehlerhaft: %v", err)
