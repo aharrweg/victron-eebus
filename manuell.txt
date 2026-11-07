@@ -1,5 +1,7 @@
 Dienst auf dem Cerbo einrichten (Shell)
+
 Melden Sie sich per SSH auf dem Cerbo an und richten Sie den Autostart über den Venus-OS-Supervisor ein:
+
 # 1. Verzeichnisse anlegen
 mkdir -p /data/apps/eebus/service/log
 mkdir -p /data/apps/eebus/cert
@@ -34,153 +36,37 @@ fi
 EOF
 chmod +x /data/rc.local
 
-
 Prüfen Sie den Status mit:
 svstat /service/eebus
 
 
 3. Pairing: Eigener SKI und Steuerbox koppeln
-EEBUS nutzt gegenseitige Authentifizierung über sogenannte SKI (Subject Key Identifier). Der Cerbo und die Steuerbox des Messstellenbetreibers/Netzbetreibers müssen sich gegenseitig kennen:
-Eigenen Cerbo-SKI ermitteln: cat /data/apps/eebus/log/current | tai64nlocal
-Diesen SKI tragen Sie in der Konfiguration/Weboberfläche der Steuerbox bzw. des SMGW als Gegenstelle ein.
 
-config.json auf dem Cerbo anlegen (/data/apps/eebus/config.json):
+EEBUS nutzt gegenseitige Authentifizierung über sogenannte SKI (Subject Key Identifier). Der Cerbo und die Steuerbox des Messstellenbetreibers/Netzbetreibers müssen sich gegenseitig kennen.
 
-{
-  "authorized_skis": [
-    "0123-4567-89ab-cdef-0123-4567-89ab-cdef-0123-4567"
-  ]
-}
+Eigenen Cerbo-SKI ermitteln: 
+cat /data/apps/eebus/log/current | tai64nlocal | grep "SKI"
 
-Node-RED JSON
-
-[
-  {
-    "id": "eebus_mqtt_in",
-    "type": "mqtt in",
-    "z": "tab_eebus",
-    "name": "EEBUS Grid Limit",
-    "topic": "victron/eebus/grid_limit",
-    "qos": "0",
-    "datatype": "json",
-    "broker": "cerbo_local_mqtt",
-    "nl": false,
-    "rap": true,
-    "rh": 0,
-    "inputs": 0,
-    "x": 150,
-    "y": 140,
-    "wires": [
-      [
-        "eval_limit_func",
-        "failsafe_trigger"
-      ]
-    ]
-  },
-  {
-    "id": "cerbo_local_mqtt",
-    "type": "mqtt-broker",
-    "name": "Localhost Broker",
-    "broker": "127.0.0.1",
-    "port": "1883",
-    "clientid": "nodered-eebus-sub",
-    "autoConnect": true,
-    "usetls": false,
-    "protocolVersion": "4",
-    "keepalive": "60",
-    "cleansession": true,
-    "autoUnsubscribe": true
-  },
-  {
-    "id": "failsafe_trigger",
-    "type": "trigger",
-    "z": "tab_eebus",
-    "name": "Fail-Safe Watchdog (60s)",
-    "op1": "",
-    "op2": "{\"active\": true, \"limit_watts\": 4200, \"failsafe\": true}",
-    "op2type": "json",
-    "duration": "60",
-    "extend": true,
-    "overrideDelay": false,
-    "units": "s",
-    "reset": "",
-    "bytopic": "all",
-    "topic": "topic",
-    "outputs": 1,
-    "x": 420,
-    "y": 200,
-    "wires": [
-      [
-        "eval_limit_func"
-      ]
-    ]
-  },
-  {
-    "id": "eval_limit_func",
-    "type": "function",
-    "z": "tab_eebus",
-    "name": "Limit & Drosselpfade",
-    "func": "const payload = msg.payload;\n\n// Wenn Fail-Safe oder Drosselung aktiv ist\nif (payload.active === true) {\n    const limitW = Number(payload.limit_watts) || 4200;\n    node.warn(`[§14a EnWG] Dimmung aktiv: ${limitW} W`);\n    \n    // 1. Victron ESS Ladegrenze setzen\n    return [\n        { payload: { value: limitW } }, // Ausgang 1: MaxChargePower\n        { payload: { value: 1 } }       // Ausgang 2: Optional Status-Relais/Flag\n    ];\n} else {\n    node.info('[§14a EnWG] Normalbetrieb (keine Drosselung)');\n    // 0 = Keine Begrenzung im ESS\n    return [\n        { payload: { value: 0 } },\n        { payload: { value: 0 } }\n    ];\n}",
-    "outputs": 2,
-    "timeout": 0,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 420,
-    "y": 140,
-    "wires": [
-      [
-        "victron_max_charge"
-      ],
-      [
-        "debug_status"
-      ]
-    ]
-  },
-  {
-    "id": "victron_max_charge",
-    "type": "victron-output-ess",
-    "z": "tab_eebus",
-    "name": "ESS Max Charge Power",
-    "service": "com.victronenergy.settings",
-    "path": "/Settings/CGwacs/MaxChargePower",
-    "serviceObj": {
-      "service": "com.victronenergy.settings",
-      "name": "Venus Settings"
-    },
-    "pathObj": {
-      "path": "/Settings/CGwacs/MaxChargePower",
-      "type": "integer",
-      "name": "Max Charge Power"
-    },
-    "initial": "",
-    "x": 680,
-    "y": 120,
-    "wires": []
-  },
-  {
-    "id": "debug_status",
-    "type": "debug",
-    "z": "tab_eebus",
-    "name": "Drosselstatus Debug",
-    "active": true,
-    "tosidebar": true,
-    "console": false,
-    "tostatus": false,
-    "complete": "payload",
-    "targetType": "msg",
-    "statusVal": "",
-    "statusType": "auto",
-    "x": 670,
-    "y": 180,
-    "wires": []
-  }
-]
+Diesen SKI tragen Sie in der Konfiguration/Weboberfläche der Steuerbox bzw. des SMGW als Gegenstelle ein. 
+(Hinweis: Die Anmeldung neuer Steuerboxen am Cerbo erfolgt automatisch, sobald diese im selben Netzwerk gefunden werden. Alternativ kann ein SKI manuell über Node-RED registriert werden, siehe Beispiel-Flow).
 
 
-Test-Payload direkt per MQTT
-dbus -y com.victronenergy.settings /Settings/CGwacs/MaxChargePower SetValue 0
-mosquitto_pub -h 127.0.0.1 -t "victron/eebus/grid_limit" -m '{"active":true,"limit_watts":4200,"source_ski":"TEST-SKI"}'
+Node-RED Integration
 
-mosquitto_pub -h 127.0.0.1 -t "victron/eebus/grid_limit" -m '{"active":false,"limit_watts":0,"source_ski":"TEST-SKI"}'
+Der komplette, aktuelle Node-RED Flow für § 14a (Verbrauch) und EEG (PV-Limit) befindet sich nun in der separaten Datei `nodered_example.json` im Hauptverzeichnis des Repositories.
+Bitte diese Datei in Node-RED über "Import" -> "Clipboard" einfügen.
+
+
+Test-Payload direkt per MQTT (für manuelle Tests über die SSH-Konsole)
+
+# Test: § 14a Dimmung auf 4.200 W aktivieren
+mosquitto_pub -h 127.0.0.1 -t "eebus/grid/limit" -m '{"active":true,"power_limit_w":4200}'
+
+# Test: § 14a Dimmung aufheben (Normalbetrieb)
+mosquitto_pub -h 127.0.0.1 -t "eebus/grid/limit" -m '{"active":false,"power_limit_w":0}'
+
+# Test: EEG PV-Einspeisung auf 6.000 W drosseln
+mosquitto_pub -h 127.0.0.1 -t "eebus/pv/limit" -m '{"active":true,"power_limit_w":6000}'
+
+# Test: EEG PV-Einspeisung aufheben (100%)
+mosquitto_pub -h 127.0.0.1 -t "eebus/pv/limit" -m '{"active":false,"power_limit_w":0}'
