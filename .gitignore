@@ -31,3 +31,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Spezifische Go-Binaries ohne Endung (z.B. für Linux ARM/Cerbo)
+eebus-cerbo
+
+# TLS-Zertifikate und Private Keys
+*.pem
+*.key
+*.crt
