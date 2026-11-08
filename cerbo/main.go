@@ -62,7 +62,10 @@ func (h *ServiceHandler) RemoteSKIDisconnected(srv eebusapi.ServiceInterface, sk
 func (h *ServiceHandler) VisibleRemoteServicesUpdated(srv eebusapi.ServiceInterface, entries []shipapi.RemoteService) {
 	h.knownSkisMux.Lock()
 	defer h.knownSkisMux.Unlock()
+
+	var deviceList []string
 	for _, entry := range entries {
+		deviceList = append(deviceList, entry.Ski)
 		if !h.knownSkis[entry.Ski] {
 			h.knownSkis[entry.Ski] = true
 			if h.srv != nil {
@@ -70,7 +73,15 @@ func (h *ServiceHandler) VisibleRemoteServicesUpdated(srv eebusapi.ServiceInterf
 			}
 		}
 	}
+
+	// NEU: Liste der gefundenen Remote-Services an Node-RED senden!
+	h.publishJSON("eebus/discovery", map[string]any{
+		"count":   len(entries),
+		"devices": deviceList,
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
 }
+
 func (h *ServiceHandler) ServicePairingDetailUpdate(ski string, detail *shipapi.ConnectionStateDetail) {}
 func (h *ServiceHandler) ServiceShipIDUpdate(ski string, shipID string) {}
 
