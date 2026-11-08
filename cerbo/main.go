@@ -53,9 +53,12 @@ func (h *ServiceHandler) publishJSON(topic string, data any) {
 func (h *ServiceHandler) RemoteSKIConnected(srv eebusapi.ServiceInterface, ski string) {
 	h.publishJSON("eebus/status", map[string]any{"connected": true, "remote_ski": ski})
 }
+
 func (h *ServiceHandler) RemoteSKIDisconnected(srv eebusapi.ServiceInterface, ski string) {
+	// Send a "connected: false" status when the connection drops
 	h.publishJSON("eebus/status", map[string]any{"connected": false, "remote_ski": ski})
 }
+
 func (h *ServiceHandler) VisibleRemoteServicesUpdated(srv eebusapi.ServiceInterface, entries []shipapi.RemoteService) {
 	h.knownSkisMux.Lock()
 	defer h.knownSkisMux.Unlock()
@@ -77,7 +80,18 @@ func (h *ServiceHandler) HandleEvent(payload spineapi.EventPayload) {
 		return
 	}
 
-	// Datenstruktur auswerten
+	// 1. NEU: Heartbeat (DeviceDiagnosis) abfangen und an Node-RED senden
+	if _, ok := payload.Data.(*spinemodel.DeviceDiagnosisStateDataType); ok {
+		h.publishJSON("eebus/heartbeat", map[string]any{
+			"status":    "active",
+			"cerbo_ski": payload.Ski,
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+		// log.Printf("[EEBUS] Heartbeat empfangen") // Optional: Auskommentiert, damit der Log nicht zu unübersichtlich wird
+		return
+	}
+
+	// 2. Leistungs-Limits auswerten (wie bisher)
 	if data, ok := payload.Data.(*spinemodel.LoadControlLimitListDataType); ok && data != nil {
 		for _, item := range data.LoadControlLimitData {
 			if item.Value == nil || item.Value.Number == nil || item.LimitId == nil {
@@ -109,7 +123,7 @@ func (h *ServiceHandler) HandleEvent(payload spineapi.EventPayload) {
 			} else if limitId == 2 {
 				log.Printf("[EEBUS EEG] Vorgabe PV-Einspeisung empfangen: %.1f W", val)
 				h.publishJSON("eebus/pv/limit", map[string]any{
-					"active":        val < 30000, // True, sobald gedrosselt wird (unter Normalwert)
+					"active":        val < 30000,
 					"power_limit_w": val,
 					"source":        "eebus",
 					"timestamp":     time.Now().Format(time.RFC3339),
@@ -157,6 +171,29 @@ func main() {
 		mqttClient: mqttClient,
 		knownSkis:  make(map[string]bool),
 	}
+	
+	// Auf eingehende MQTT-Nachrichten lauschen (z. B. manuelles Pairing)
+	mqttClient.Subscribe("eebus/service/register_ski", 0, func(client mqtt.Client, msg mqtt.Message) {
+		var payload struct {
+			Ski string `json:"ski"`
+		}
+		if err := json.Unmarshal(msg.Payload(), &payload); err == nil && payload.Ski != "" {
+			log.Printf("[MQTT IN] Manueller Pairing-Befehl fuer SKI erhalten: %s", payload.Ski)
+			
+			// SKI in der lokalen Liste als "bekannt" markieren
+			handler.knownSkisMux.Lock()
+			handler.knownSkis[payload.Ski] = true
+			handler.knownSkisMux.Unlock()
+
+			// SKI beim EEBUS-Service registrieren, falls dieser schon laeuft
+			if handler.srv != nil {
+				handler.srv.RegisterRemoteSKI(payload.Ski)
+				log.Printf("[EEBUS] SKI %s erfolgreich fuer Pairing freigeschaltet.", payload.Ski)
+			}
+		} else {
+			log.Printf("[MQTT ERROR] Ungueltiges Pairing-Payload: %s", string(msg.Payload()))
+		}
+	})
 
 	if err := os.MkdirAll(CertDir, 0755); err != nil {
 		log.Fatalf("Zertifikatsordner fehlerhaft: %v", err)

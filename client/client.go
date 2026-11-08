@@ -215,7 +215,7 @@ func main() {
 		[]spinemodel.EntityTypeType{spinemodel.EntityTypeTypeCEM},
 		4713,
 		tlsCert,
-		10*time.Minute,
+		30*time.Second,
 	)
 	if err != nil {
 		log.Fatalf("Konfiguration: %v", err)
